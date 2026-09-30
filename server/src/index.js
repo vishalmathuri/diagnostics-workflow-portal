@@ -7,9 +7,14 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { z, ZodError } from 'zod';
 import { db } from './db.js';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) throw new Error('Set JWT_SECRET to at least 32 characters');
 const app = express();
+const proxyHops = Number(process.env.TRUST_PROXY_HOPS || 0);
+if (!Number.isInteger(proxyHops) || proxyHops < 0 || proxyHops > 10) throw new Error('Invalid TRUST_PROXY_HOPS');
+if (proxyHops) app.set('trust proxy', proxyHops);
 app.use(helmet());
 app.use(cors({ origin: process.env.CLIENT_ORIGIN || 'http://localhost:5173' }));
 app.use(express.json({ limit: '16kb' }));
@@ -18,6 +23,15 @@ const asyncRoute = fn => (req,res,next) => Promise.resolve(fn(req,res,next)).cat
 const bad = (res,message,code=400) => res.status(code).json({ error: message });
 const idOf = req => z.coerce.number().int().positive().parse(req.params.id);
 const text = (max=120) => z.string().trim().min(1).max(max);
+
+app.get('/health',asyncRoute(async(req,res) => {
+  try {
+    await db.query({sql:'SELECT 1',timeout:5000});
+    res.json({status:'ok'});
+  } catch {
+    res.status(503).json({status:'unavailable'});
+  }
+}));
 
 function authenticate(req,res,next) {
   try {
@@ -133,6 +147,13 @@ app.get('/api/results',asyncRoute(async(req,res) => {
     ORDER BY r.reviewed_at DESC LIMIT 100`,[like,like]);
   res.json(rows);
 }));
+app.use('/api',(req,res) => bad(res,'API endpoint not found',404));
+if (process.env.NODE_ENV === 'production') {
+  const clientDist = fileURLToPath(new URL('../../client/dist/',import.meta.url));
+  if (!existsSync(`${clientDist}index.html`)) throw new Error('Build the React client before starting production');
+  app.use(express.static(clientDist));
+  app.get('*',(req,res) => res.sendFile(`${clientDist}index.html`));
+}
 app.use((error,req,res,next) => {
   if (error instanceof ZodError) return bad(res,error.issues.map(x=>`${x.path.join('.')}: ${x.message}`).join('; '));
   if (error.code==='ER_DUP_ENTRY') return bad(res,'Sample code already exists',409);
@@ -140,4 +161,4 @@ app.use((error,req,res,next) => {
   console.error(error);
   return bad(res,'Internal server error',500);
 });
-app.listen(Number(process.env.PORT||4000),()=>console.log(`API ready on port ${process.env.PORT||4000}`));
+app.listen(Number(process.env.PORT||4000),'0.0.0.0',()=>console.log(`API ready on port ${process.env.PORT||4000}`));

@@ -82,6 +82,8 @@ jobs:
         run: npm ci
       - name: Create tables and seed synthetic data
         run: npm run seed
+      - name: Verify safe deployment initialization
+        run: npm run test:initialize
       - name: Start API and test the complete workflow
         shell: bash
         run: |
